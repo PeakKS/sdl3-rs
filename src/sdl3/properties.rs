@@ -1,7 +1,6 @@
 use libc::c_char;
 use libc::c_void;
 use std::ffi::CStr;
-use std::ffi::CString;
 use std::ffi::NulError;
 use std::ptr;
 use std::str::Utf8Error;
@@ -9,9 +8,11 @@ use sys::properties::SDL_PropertiesID;
 
 use crate::get_error;
 use crate::sys;
+use crate::util::StringParam;
 
 #[derive(Debug)]
 pub enum PropertiesError {
+    ParamError(NulError),
     NameError(NulError),
     TypeError(NulError),
     DecodeError(Utf8Error),
@@ -24,12 +25,12 @@ pub struct Properties {
     internal: sys::properties::SDL_PropertiesID,
 }
 
-// Ideally this could be replaced by TryInto<CString> parameters (see: https://github.com/rust-lang/rust/issues/71448)
-macro_rules! cstring {
+// Wrap try_into conversion/errors for StringParam
+macro_rules! stringparam {
     ($name:ident) => {
-        let $name = match CString::new($name) {
+        let $name = match $name.try_into() {
             Ok(name) => name,
-            Err(error) => return Err(PropertiesError::NameError(error)),
+            Err(error) => return Err(PropertiesError::ParamError(error)),
         };
     };
 }
@@ -96,8 +97,11 @@ impl Properties {
     }
 
     #[doc(alias = "SDL_HasProperty")]
-    pub fn contains(&self, name: &str) -> Result<bool, PropertiesError> {
-        cstring!(name);
+    pub fn contains<S>(&self, name: S) -> Result<bool, PropertiesError>
+    where
+        S: TryInto<StringParam, Error = NulError>,
+    {
+        stringparam!(name);
         unsafe {
             Ok(sys::properties::SDL_HasProperty(
                 self.internal,
@@ -107,8 +111,11 @@ impl Properties {
     }
 
     #[doc(alias = "SDL_GetPropertyType")]
-    pub fn get_type(&self, name: &str) -> Result<PropertyType, PropertiesError> {
-        cstring!(name);
+    pub fn get_type<S>(&self, name: S) -> Result<PropertyType, PropertiesError>
+    where
+        S: TryInto<StringParam, Error = NulError>,
+    {
+        stringparam!(name);
         unsafe {
             Ok(sys::properties::SDL_GetPropertyType(
                 self.internal,
@@ -139,8 +146,11 @@ impl Properties {
     }
 
     #[doc(alias = "SDL_ClearProperty")]
-    pub fn clear(&mut self, name: &str) -> Result<(), PropertiesError> {
-        cstring!(name);
+    pub fn clear<S>(&mut self, name: S) -> Result<(), PropertiesError>
+    where
+        S: TryInto<StringParam, Error = NulError>,
+    {
+        stringparam!(name);
         if unsafe { sys::properties::SDL_ClearProperty(self.internal, name.as_ptr()) } {
             Ok(())
         } else {
@@ -149,7 +159,10 @@ impl Properties {
     }
 
     #[doc(alias = "SDL_GetPointerProperty")]
-    pub fn with<T>(&mut self, name: &str, with: fn(&T)) -> Result<(), PropertiesError> {
+    pub fn with<S, T>(&mut self, name: S, with: fn(&T)) -> Result<(), PropertiesError>
+    where
+        S: TryInto<StringParam, Error = NulError>,
+    {
         self.lock()?;
         let pointer = self.get(name, None::<*mut T>)?;
         let reference = unsafe { &mut *pointer };
@@ -160,13 +173,18 @@ impl Properties {
 }
 
 pub trait PropertySetter<T> {
-    fn set(&self, name: &str, value: T) -> Result<(), PropertiesError>;
+    fn set<S>(&self, name: S, value: T) -> Result<(), PropertiesError>
+    where
+        S: TryInto<StringParam, Error = NulError>;
 }
 
 impl PropertySetter<bool> for Properties {
     #[doc(alias = "SDL_SetBooleanProperty")]
-    fn set(&self, name: &str, value: bool) -> Result<(), PropertiesError> {
-        cstring!(name);
+    fn set<S>(&self, name: S, value: bool) -> Result<(), PropertiesError>
+    where
+        S: TryInto<StringParam, Error = NulError>,
+    {
+        stringparam!(name);
         if unsafe { sys::properties::SDL_SetBooleanProperty(self.internal, name.as_ptr(), value) } {
             Ok(())
         } else {
@@ -177,8 +195,11 @@ impl PropertySetter<bool> for Properties {
 
 impl PropertySetter<f32> for Properties {
     #[doc(alias = "SDL_SetFloatProperty")]
-    fn set(&self, name: &str, value: f32) -> Result<(), PropertiesError> {
-        cstring!(name);
+    fn set<S>(&self, name: S, value: f32) -> Result<(), PropertiesError>
+    where
+        S: TryInto<StringParam, Error = NulError>,
+    {
+        stringparam!(name);
         if unsafe { sys::properties::SDL_SetFloatProperty(self.internal, name.as_ptr(), value) } {
             Ok(())
         } else {
@@ -189,8 +210,11 @@ impl PropertySetter<f32> for Properties {
 
 impl PropertySetter<i64> for Properties {
     #[doc(alias = "SDL_SetNumberProperty")]
-    fn set(&self, name: &str, value: i64) -> Result<(), PropertiesError> {
-        cstring!(name);
+    fn set<S>(&self, name: S, value: i64) -> Result<(), PropertiesError>
+    where
+        S: TryInto<StringParam, Error = NulError>,
+    {
+        stringparam!(name);
         if unsafe { sys::properties::SDL_SetNumberProperty(self.internal, name.as_ptr(), value) } {
             Ok(())
         } else {
@@ -201,10 +225,17 @@ impl PropertySetter<i64> for Properties {
 
 impl PropertySetter<&str> for Properties {
     #[doc(alias = "SDL_SetStringProperty")]
-    fn set(&self, name: &str, value: &str) -> Result<(), PropertiesError> {
-        cstring!(name);
+    fn set<S>(&self, name: S, value: &str) -> Result<(), PropertiesError>
+    where
+        S: TryInto<StringParam, Error = NulError>,
+    {
+        stringparam!(name);
         // Have to transform the value into a cstring, SDL makes an internal copy
-        cstring!(value);
+        let value: StringParam = match value.try_into() {
+            Ok(value) => value,
+            Err(error) => return Err(PropertiesError::ParamError(error)),
+        };
+
         if unsafe {
             sys::properties::SDL_SetStringProperty(self.internal, name.as_ptr(), value.as_ptr())
         } {
@@ -217,8 +248,11 @@ impl PropertySetter<&str> for Properties {
 
 impl<T> PropertySetter<*mut T> for Properties {
     #[doc(alias = "SDL_SetPointerProperty")]
-    fn set(&self, name: &str, value: *mut T) -> Result<(), PropertiesError> {
-        cstring!(name);
+    fn set<S>(&self, name: S, value: *mut T) -> Result<(), PropertiesError>
+    where
+        S: TryInto<StringParam, Error = NulError>,
+    {
+        stringparam!(name);
         if unsafe {
             sys::properties::SDL_SetPointerProperty(
                 self.internal,
@@ -235,8 +269,11 @@ impl<T> PropertySetter<*mut T> for Properties {
 
 impl<T> PropertySetter<Box<T>> for Properties {
     #[doc(alias = "SDL_SetPointerPropertyWithCleanup")]
-    fn set(&self, name: &str, value: Box<T>) -> Result<(), PropertiesError> {
-        cstring!(name);
+    fn set<S>(&self, name: S, value: Box<T>) -> Result<(), PropertiesError>
+    where
+        S: TryInto<StringParam, Error = NulError>,
+    {
+        stringparam!(name);
         let value_ptr = Box::into_raw(value) as *mut c_void;
         let cleanup: CleanupCallback = |value: *mut c_void| {
             let value = value as *mut T;
@@ -262,7 +299,9 @@ impl<T> PropertySetter<Box<T>> for Properties {
 }
 
 pub trait PropertyGetter<T> {
-    fn get(&self, name: &str, default: Option<T>) -> Result<T, PropertiesError>;
+    fn get<S>(&self, name: S, default: Option<T>) -> Result<T, PropertiesError>
+    where
+        S: TryInto<StringParam, Error = NulError>;
 }
 
 /// If the consumer passes no default value, error out if the key does not exist
@@ -283,8 +322,11 @@ macro_rules! nodefault {
 
 impl PropertyGetter<bool> for Properties {
     #[doc(alias = "SDL_GetBooleanProperty")]
-    fn get(&self, name: &str, default: Option<bool>) -> Result<bool, PropertiesError> {
-        cstring!(name);
+    fn get<S>(&self, name: S, default: Option<bool>) -> Result<bool, PropertiesError>
+    where
+        S: TryInto<StringParam, Error = NulError>,
+    {
+        stringparam!(name);
         unsafe {
             nodefault!(self, name, default, false);
             Ok(sys::properties::SDL_GetBooleanProperty(
@@ -298,8 +340,11 @@ impl PropertyGetter<bool> for Properties {
 
 impl PropertyGetter<f32> for Properties {
     #[doc(alias = "SDL_GetFloatProperty")]
-    fn get(&self, name: &str, default: Option<f32>) -> Result<f32, PropertiesError> {
-        cstring!(name);
+    fn get<S>(&self, name: S, default: Option<f32>) -> Result<f32, PropertiesError>
+    where
+        S: TryInto<StringParam, Error = NulError>,
+    {
+        stringparam!(name);
         unsafe {
             nodefault!(self, name, default, 0.0);
             Ok(sys::properties::SDL_GetFloatProperty(
@@ -313,8 +358,11 @@ impl PropertyGetter<f32> for Properties {
 
 impl PropertyGetter<i64> for Properties {
     #[doc(alias = "SDL_GetNumberProperty")]
-    fn get(&self, name: &str, default: Option<i64>) -> Result<i64, PropertiesError> {
-        cstring!(name);
+    fn get<S>(&self, name: S, default: Option<i64>) -> Result<i64, PropertiesError>
+    where
+        S: TryInto<StringParam, Error = NulError>,
+    {
+        stringparam!(name);
         unsafe {
             nodefault!(self, name, default, 0);
             Ok(sys::properties::SDL_GetNumberProperty(
@@ -328,8 +376,11 @@ impl PropertyGetter<i64> for Properties {
 
 impl PropertyGetter<String> for Properties {
     #[doc(alias = "SDL_GetStringProperty")]
-    fn get(&self, name: &str, default: Option<String>) -> Result<String, PropertiesError> {
-        cstring!(name);
+    fn get<S>(&self, name: S, default: Option<String>) -> Result<String, PropertiesError>
+    where
+        S: TryInto<StringParam, Error = NulError>,
+    {
+        stringparam!(name);
         let default_ptr = if default.is_none() {
             unsafe {
                 if !sys::properties::SDL_HasProperty(self.internal, name.as_ptr()) {
@@ -362,8 +413,11 @@ impl PropertyGetter<String> for Properties {
 
 impl<T> PropertyGetter<*mut T> for Properties {
     #[doc(alias = "SDL_GetPointerProperty")]
-    fn get(&self, name: &str, default: Option<*mut T>) -> Result<*mut T, PropertiesError> {
-        cstring!(name);
+    fn get<S>(&self, name: S, default: Option<*mut T>) -> Result<*mut T, PropertiesError>
+    where
+        S: TryInto<StringParam, Error = NulError>,
+    {
+        stringparam!(name);
         let default = if default.is_none() {
             unsafe {
                 if !sys::properties::SDL_HasProperty(self.internal, name.as_ptr()) {
